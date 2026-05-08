@@ -8,7 +8,8 @@
 ## Mục lục
 
 1. [Tổng quan & Quy ước ký hiệu](#0-tổng-quan--quy-ước-ký-hiệu)
-2. [Shared Entities](#1-shared-entities)
+2. [Kiến trúc Compiler & Root Command](#05-kiến-trúc-compiler--root-command)
+3. [Shared Entities](#1-shared-entities)
 3. [Đơn hàng (Orders)](#2-đơn-hàng-orders)
 4. [Giao hàng (Shipping)](#3-giao-hàng-shipping)
 5. [Đổi trả & Hoàn tiền (Returns & Refunds)](#4-đổi-trả--hoàn-tiền-returns--refunds)
@@ -77,6 +78,249 @@ Bot chấp nhận:
 - Viết không dấu: `don hang`, `kiem tra`, `bao hanh`, `giao hang`
 - Viết tắt phổ biến: `DH` (đơn hàng), `SP` (sản phẩm), `BH` (bảo hành), `KH` (khách hàng)
 - Không phân biệt hoa/thường
+
+---
+
+## 0.5 Kiến trúc Compiler & Root Command
+
+### Tổng quan luồng xử lý
+
+Mọi input — dù từ nhân viên, khách hàng, hay hệ thống — đều đi qua **compiler** trước khi trở thành **root command** ở tầng sâu nhất. Có ba loại input, mỗi loại có compiler path riêng:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        INPUT SOURCES                        │
+│                                                             │
+│  [A] Employee chat      [B] Customer chat    [C] Compact    │
+│  /order status 10234    "đơn 10234 ở đâu"   order.status() │
+└──────────┬───────────────────┬───────────────────┬──────────┘
+           │                   │                   │
+           ▼                   ▼                   ▼
+┌──────────────────┐ ┌──────────────────┐ ┌──────────────────┐
+│ Slash Command    │ │ NLU Compiler     │ │ Compact String   │
+│ Compiler         │ │                  │ │ Compiler         │
+│ (pure algorithm) │ │ algorithm        │ │ (pure algorithm) │
+│                  │ │    OR            │ │                  │
+│                  │ │ AI Agent API     │ │                  │
+└──────────┬───────┘ └────────┬─────────┘ └────────┬─────────┘
+           │                  │                     │
+           └──────────────────┴─────────────────────┘
+                              │
+                              ▼
+               ┌──────────────────────────┐
+               │     ROOT COMMAND         │
+               │   (JSON — tầng sâu nhất) │
+               └──────────────────────────┘
+```
+
+---
+
+### Input A — Slash Command (Employee)
+
+Nhân viên gõ lệnh có cấu trúc. Compiler phân tích cú pháp tĩnh (lexer/parser thuần thuật toán):
+
+```
+/order status 10234
+ ──────┬────── ──┬─── ─────┬─────
+    domain    action     param[0]
+```
+
+**Quy tắc parse:**
+1. Token đầu tiên sau `/` → `domain`
+2. Token thứ hai → `action`
+3. Token thứ ba (nếu không có `--`) → `target` (tham số vị trí đầu tiên)
+4. `--key=value` hoặc `--key "value"` → named params
+5. `--flag` (không có giá trị) → boolean flag = `true`
+
+---
+
+### Input B — Natural Language (Customer)
+
+Khách hàng gõ câu tự nhiên. Compiler có **hai chế độ** — cấu hình tại deploy time:
+
+#### Chế độ 1: Pure Algorithm (Rule-based NLU)
+
+Pattern matching theo danh sách intent đã định nghĩa trong spec này. Ưu tiên:
+1. Khớp keyword domain (`đơn hàng`, `giao hàng`, `bảo hành`...)
+2. Khớp intent pattern (`~ ... ~`) theo thứ tự từ cụ thể → chung
+3. Extract entity bằng regex và vị trí trong câu
+4. Slot filling nếu thiếu entity bắt buộc
+
+#### Chế độ 2: AI Agent API
+
+Gửi toàn bộ câu input cùng với context lên AI Agent. Agent trả về root command dạng JSON hoặc compact string. Compiler validate schema rồi emit.
+
+**Request format gửi lên AI Agent:**
+```json
+{
+  "input": "đơn 10234 đang ở đâu",
+  "context": {
+    "role": "CUSTOMER",
+    "channel": "web",
+    "session_id": "sess_abc123",
+    "history": []
+  },
+  "output_schema": "root_command_v1"
+}
+```
+
+**Expected response từ AI Agent:**
+```json
+{
+  "compact": "order.status(order_id=10234)",
+  "confidence": 0.97,
+  "slot_filled": true
+}
+```
+
+Compiler nhận compact string từ AI Agent → chạy tiếp qua **Input C path** để sinh JSON.
+
+---
+
+### Input C — Compact String
+
+Compact string là input có cấu trúc nhẹ — dùng bởi developer (test case), hệ thống nội bộ, hoặc output từ AI Agent. Luôn đi qua **pure algorithm compiler**.
+
+#### Compact String Format
+
+```
+<domain>.<action>(<param_key>=<value>, ...) @<ROLE> #<channel>
+```
+
+| Phần | Bắt buộc | Mô tả |
+|------|----------|-------|
+| `domain` | Có | Tên domain (xem bảng prefix) |
+| `action` | Có | Tên action |
+| `(params)` | Không | Danh sách `key=value`, phân cách bằng `, ` |
+| `@ROLE` | Không | Override role: `@CUSTOMER`, `@EMPLOYEE`, `@MANAGER`... |
+| `#channel` | Không | Override channel: `#web`, `#zalo`, `#messenger` |
+
+**Ví dụ:**
+
+```
+order.status(order_id=10234)
+order.list(status=PENDING, date=01/05/2026~08/05/2026) @STAFF
+ship.assign(order_id=10234, carrier=GHN) @STAFF #web
+warranty.status(warranty_code=BH00456)
+debt.confirm(debt_id=CN001, amount=5000000) @ACCOUNTANT
+report.today() @MANAGER
+```
+
+**Quy tắc parse Compact String:**
+1. Split theo `.` lấy `domain` và phần còn lại
+2. Split phần còn lại theo `(` lấy `action`
+3. Parse nội dung trong `()` theo `key=value, ...`
+4. Scan suffix `@ROLE` và `#channel` nếu có
+5. Giá trị string có khoảng trắng phải đặt trong `"..."`:
+   ```
+   customer.note(customer_id=KH001, content="khách VIP")
+   ```
+
+---
+
+### Root Command — JSON Schema (Tầng sâu nhất)
+
+Đây là canonical form mà bot engine tiêu thụ. Mọi input path đều hội tụ về đây.
+
+```json
+{
+  "domain":  "<string>",
+  "action":  "<string>",
+  "params":  { "<key>": "<value>", ... },
+  "context": {
+    "role":       "<CUSTOMER|STAFF|WAREHOUSE|SUPERVISOR|ACCOUNTANT|MANAGER>",
+    "channel":    "<web|zalo|messenger|telegram|mobile>",
+    "session_id": "<string>",
+    "user_id":    "<string|null>",
+    "timestamp":  "<ISO 8601>"
+  },
+  "meta": {
+    "input_type":  "<slash|natural|compact>",
+    "compiler":    "<algorithm|ai_agent>",
+    "confidence":  "<float 0–1 | null>",
+    "raw_input":   "<string>"
+  }
+}
+```
+
+**Ví dụ đầy đủ — cùng intent từ 3 input khác nhau:**
+
+```json
+// Input A: /order status 10234  (nhân viên)
+{
+  "domain": "order",
+  "action": "status",
+  "params": { "order_id": "10234" },
+  "context": {
+    "role": "STAFF",
+    "channel": "web",
+    "session_id": "sess_xyz",
+    "user_id": "EMP001",
+    "timestamp": "2026-05-08T10:30:00+07:00"
+  },
+  "meta": {
+    "input_type": "slash",
+    "compiler": "algorithm",
+    "confidence": null,
+    "raw_input": "/order status 10234"
+  }
+}
+
+// Input B: "đơn 10234 đang ở đâu"  (khách hàng, AI Agent)
+{
+  "domain": "order",
+  "action": "status",
+  "params": { "order_id": "10234" },
+  "context": {
+    "role": "CUSTOMER",
+    "channel": "zalo",
+    "session_id": "sess_abc",
+    "user_id": "CUS5501",
+    "timestamp": "2026-05-08T10:31:00+07:00"
+  },
+  "meta": {
+    "input_type": "natural",
+    "compiler": "ai_agent",
+    "confidence": 0.97,
+    "raw_input": "đơn 10234 đang ở đâu"
+  }
+}
+
+// Input C: order.status(order_id=10234) @CUSTOMER #zalo
+{
+  "domain": "order",
+  "action": "status",
+  "params": { "order_id": "10234" },
+  "context": {
+    "role": "CUSTOMER",
+    "channel": "zalo",
+    "session_id": "sess_abc",
+    "user_id": "CUS5501",
+    "timestamp": "2026-05-08T10:31:00+07:00"
+  },
+  "meta": {
+    "input_type": "compact",
+    "compiler": "algorithm",
+    "confidence": null,
+    "raw_input": "order.status(order_id=10234) @CUSTOMER #zalo"
+  }
+}
+```
+
+> **Nhận xét:** Cả 3 input tạo ra cùng `domain`, `action`, `params` — chỉ khác `context` và `meta`. Bot engine chỉ cần xử lý một schema duy nhất.
+
+---
+
+### Xử lý lỗi Compiler
+
+| Lỗi | Mô tả | Hành động |
+|-----|-------|-----------|
+| `UNKNOWN_INTENT` | Không khớp được intent nào | Hỏi lại người dùng |
+| `MISSING_PARAM` | Thiếu tham số bắt buộc | Slot filling — hỏi từng param |
+| `INVALID_PARAM` | Giá trị param sai kiểu/format | Thông báo lỗi + gợi ý format đúng |
+| `PERMISSION_DENIED` | Role không đủ quyền | Từ chối + log audit |
+| `AMBIGUOUS_INTENT` | Confidence < 0.6 (AI mode) | Đưa ra 2–3 lựa chọn để xác nhận |
+| `COMPILER_ERROR` | Lỗi nội bộ compiler | Fallback sang human support |
 
 ---
 
