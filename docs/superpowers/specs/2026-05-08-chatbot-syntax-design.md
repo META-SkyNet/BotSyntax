@@ -85,18 +85,22 @@ Bot chấp nhận:
 
 ### Mô hình tầng (Layer Model)
 
-Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Tầng sâu hơn là **ground truth** — tầng nông hơn là **biểu diễn** hoặc **sugar syntax** của nó:
+Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Bảo mật được đảm bảo **bằng thiết kế class**, không phải if-else runtime:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  TẦNG 4 — Human Input (bề mặt)                                  │
+│  TẦNG 4 — IChatBox (entry point, phân theo role)                │
 │                                                                  │
-│  [A] Slash command          [B] Natural language                 │
-│  /order status 10234        "đơn 10234 đang ở đâu"              │
-│  (nhân viên)                (khách hàng)                         │
-└─────────────────────────┬───────────────────────────────────────┘
-                          │  Compiler (algorithm | AI Agent)
-                          ▼
+│  CustomerChatBox      StaffChatBox       ManagerChatBox ...      │
+│  "đơn 10234 ở đâu"   /order status 1234  /report today         │
+│                                                                  │
+│  Role bị KHÓA tại class — không thể leo thang role trong chat   │
+└──────┬──────────────────────┬──────────────────────┬────────────┘
+       │ NLU compiler         │ Slash compiler       │ ...
+       │ (algo | AI Agent)    │ (pure algorithm)     │
+       └──────────────────────┴──────────────────────┘
+                              │
+                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  TẦNG 3 — JSON Object (transport & storage)                     │
 │                                                                  │
@@ -109,7 +113,9 @@ Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Tầng sâu hơn l
 │  TẦNG 2 — Compact String (C# interpreted expression)            │
 │                                                                  │
 │  context('staff', 'emp001').order.status(10234)                 │
-│  context('customer', guest).order.status(10234)                 │
+│  context('customer', 'cus5501').order.status(10234)             │
+│                                                                  │
+│  INTERNAL ONLY — không bao giờ xuất hiện trong chat input       │
 └─────────────────────────┬───────────────────────────────────────┘
                           │  Roslyn / C# interpreter
                           ▼
@@ -120,13 +126,43 @@ Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Tầng sâu hơn l
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **Nguyên tắc:** Compact string (tầng 2) là **C# expression chạy được** — `context()` khởi tạo execution context, chain `.domain.action()` là method call thực sự. JSON (tầng 3) là serialization để transport/log. Human input (tầng 4) là sugar syntax được compile xuống compact string.
+> **Nguyên tắc bảo mật by design:** `CustomerChatBox` về mặt vật lý không có code sinh `context('staff', ...)`. Customer gõ bất kỳ thứ gì cũng chỉ ra `context('customer', ...)` hoặc `UNKNOWN_INTENT`. Không cần if-else kiểm tra role escalation.
 
 ---
 
-### Input A — Slash Command (Nhân viên)
+### IChatBox — Interface & Implementations
 
-Nhân viên gõ lệnh cấu trúc. Compiler phân tích cú pháp tĩnh (pure algorithm):
+```csharp
+interface IChatBox {
+    CompactString Parse(string input, string userId);
+}
+```
+
+Mỗi role có một implementation riêng. Role được **hardcode trong class** — compiler của class đó chỉ biết sinh compact string với role tương ứng:
+
+| Class | Role hardcoded | Input nhận | Compact string sinh ra |
+|-------|---------------|------------|------------------------|
+| `CustomerChatBox` | `customer` | Natural language | `context('customer', userId).*.*(...)` |
+| `StaffChatBox` | `staff` | Slash commands | `context('staff', userId).*.*(...)` |
+| `WarehouseChatBox` | `warehouse` | Slash commands | `context('warehouse', userId).*.*(...)` |
+| `SupervisorChatBox` | `supervisor` | Slash commands | `context('supervisor', userId).*.*(...)` |
+| `AccountantChatBox` | `accountant` | Slash commands | `context('accountant', userId).*.*(...)` |
+| `ManagerChatBox` | `manager` | Slash commands | `context('manager', userId).*.*(...)` |
+
+**Test & Development:** Để test một role khác, instantiate đúng class đó với userId giả — không cần bypass hay mock permission.
+
+```csharp
+// Test as manager:
+var box = new ManagerChatBox();
+var cmd = box.Parse("/report today", "test-user-01");
+// → context('manager', 'test-user-01').report.today()
+```
+
+---
+
+### Input A — Slash Command (StaffChatBox và các role nhân viên)
+
+`StaffChatBox`, `WarehouseChatBox`, `SupervisorChatBox`, `AccountantChatBox`, `ManagerChatBox` đều dùng **slash command compiler** — pure algorithm, không cần AI:
 
 ```
 /order status 10234
@@ -141,13 +177,13 @@ Nhân viên gõ lệnh cấu trúc. Compiler phân tích cú pháp tĩnh (pure a
 4. `--key=value` hoặc `--key "value"` → named params
 5. `--flag` không có giá trị → boolean flag = `true`
 
-**Output:** Compact string (tầng 2)
+**Output:** `context('<role-của-class>', userId).order.status(10234)`
 
 ---
 
-### Input B — Natural Language (Khách hàng)
+### Input B — Natural Language (CustomerChatBox)
 
-Khách hàng gõ câu tự nhiên. Compiler có **hai chế độ** — cấu hình tại deploy time:
+`CustomerChatBox` dùng NLU compiler. Có **hai chế độ** — cấu hình tại deploy time:
 
 #### Chế độ 1: Pure Algorithm (Rule-based NLU)
 
@@ -157,18 +193,17 @@ Pattern matching theo danh sách intent định nghĩa trong spec này:
 3. Extract entity bằng regex và vị trí trong câu
 4. Slot filling nếu thiếu entity bắt buộc
 
-**Output:** Compact string (tầng 2)
+**Output:** `context('customer', userId).domain.action(...)`
 
 #### Chế độ 2: AI Agent API
 
-Gửi input và context lên AI Agent, nhận về compact string:
+Gửi input lên AI Agent, nhận về compact string — AI Agent KHÔNG quyết định role, chỉ quyết định domain/action/params:
 
 **Request gửi lên AI Agent:**
 ```json
 {
   "input": "đơn 10234 đang ở đâu",
-  "context": {
-    "role": "CUSTOMER",
+  "session": {
     "channel": "zalo",
     "session_id": "sess_abc123",
     "history": []
@@ -177,16 +212,21 @@ Gửi input và context lên AI Agent, nhận về compact string:
 }
 ```
 
+> **Lưu ý:** `role` không gửi lên AI Agent — AI chỉ trả về `domain.action(params)`, `CustomerChatBox` tự wrap vào `context('customer', userId)`.
+
 **Response từ AI Agent:**
 ```json
 {
-  "compact": "context('customer', 'cus5501').order.status(10234)",
+  "command": "order.status(10234)",
   "confidence": 0.97,
   "slot_filled": true
 }
 ```
 
-Compiler nhận compact string từ AI Agent → validate schema → tầng 2.
+**CustomerChatBox wrap thành compact string:**
+```
+context('customer', 'cus5501').order.status(10234)
+```
 
 ---
 
