@@ -89,18 +89,19 @@ Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Bảo mật đư�
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  TẦNG 4 — IChatBox (entry point, phân theo role)                │
+│  TẦNG 4 — IChatBox (entry point, phân theo cú pháp input)       │
 │                                                                  │
-│  CustomerChatBox      StaffChatBox       ManagerChatBox ...      │
-│  "đơn 10234 ở đâu"   /order status 1234  /report today         │
+│  NLUChatBox                    SlashChatBox                      │
+│  "đơn 10234 ở đâu"             /order status 10234              │
+│  (natural language)            (slash command)                   │
 │                                                                  │
-│  Role bị KHÓA tại class — không thể leo thang role trong chat   │
-└──────┬──────────────────────┬──────────────────────┬────────────┘
-       │ NLU compiler         │ Slash compiler       │ ...
-       │ (algo | AI Agent)    │ (pure algorithm)     │
-       └──────────────────────┴──────────────────────┘
-                              │
-                              ▼
+│  Cả hai nhận (input, role, userId) từ authenticated session      │
+└──────┬──────────────────────────────────┬────────────────────────┘
+       │ NLU compiler                     │ Slash compiler
+       │ (algorithm | AI Agent)           │ (pure algorithm)
+       └──────────────────────────────────┘
+                          │
+                          ▼ wrap vào context(role, userId)
 ┌─────────────────────────────────────────────────────────────────┐
 │  TẦNG 3 — JSON Object (transport & storage)                     │
 │                                                                  │
@@ -122,47 +123,51 @@ Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Bảo mật đư�
 ┌─────────────────────────────────────────────────────────────────┐
 │  TẦNG 1 — Thực thi (tầng sâu nhất)                             │
 │                                                                  │
-│  Bot engine dispatch handler theo domain + action + params      │
+│  Executor kiểm tra quyền theo role trong context()              │
+│  → dispatch handler hoặc PERMISSION_DENIED                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **Nguyên tắc bảo mật by design:** `CustomerChatBox` về mặt vật lý không có code sinh `context('staff', ...)`. Customer gõ bất kỳ thứ gì cũng chỉ ra `context('customer', ...)` hoặc `UNKNOWN_INTENT`. Không cần if-else kiểm tra role escalation.
+> **Nguyên tắc bảo mật:** `context(role, userId)` là security boundary — executor kiểm tra quyền dựa trên `role` trong compact string. `context('customer', ...).order.cancel(...)` → PERMISSION_DENIED ngay tại executor, không cần tách class theo role.
 
 ---
 
-### IChatBox — Interface & Implementations
+### IChatBox — Interface
 
 ```csharp
 interface IChatBox {
-    CompactString Parse(string input, string userId);
+    CompactString Parse(string input, string role, string userId);
 }
 ```
 
-Mỗi role có một implementation riêng. Role được **hardcode trong class** — compiler của class đó chỉ biết sinh compact string với role tương ứng:
+Chỉ có **2 implementation** — tách theo cú pháp input, không theo role:
 
-| Class | Role hardcoded | Input nhận | Compact string sinh ra |
-|-------|---------------|------------|------------------------|
-| `CustomerChatBox` | `customer` | Natural language | `context('customer', userId).*.*(...)` |
-| `StaffChatBox` | `staff` | Slash commands | `context('staff', userId).*.*(...)` |
-| `WarehouseChatBox` | `warehouse` | Slash commands | `context('warehouse', userId).*.*(...)` |
-| `SupervisorChatBox` | `supervisor` | Slash commands | `context('supervisor', userId).*.*(...)` |
-| `AccountantChatBox` | `accountant` | Slash commands | `context('accountant', userId).*.*(...)` |
-| `ManagerChatBox` | `manager` | Slash commands | `context('manager', userId).*.*(...)` |
+| Class | Input nhận | Dùng cho | Compiler |
+|-------|------------|----------|----------|
+| `NLUChatBox` | Natural language | Khách hàng | Algorithm hoặc AI Agent |
+| `SlashChatBox` | Slash commands `/` | Nhân viên (mọi role) | Pure algorithm |
 
-**Test & Development:** Để test một role khác, instantiate đúng class đó với userId giả — không cần bypass hay mock permission.
+Cả hai đều nhận `role` và `userId` từ **authenticated session** — không từ input của người dùng — rồi wrap vào `context(role, userId)`:
 
 ```csharp
-// Test as manager:
-var box = new ManagerChatBox();
-var cmd = box.Parse("/report today", "test-user-01");
+// Khách hàng gõ natural language:
+var cmd = new NLUChatBox().Parse("đơn 10234 ở đâu", "customer", "cus5501");
+// → context('customer', 'cus5501').order.status(10234)
+
+// Nhân viên gõ slash command:
+var cmd = new SlashChatBox().Parse("/order status 10234", "staff", "emp001");
+// → context('staff', 'emp001').order.status(10234)
+
+// Test as manager — role lấy từ session test:
+var cmd = new SlashChatBox().Parse("/report today", "manager", "test-user-01");
 // → context('manager', 'test-user-01').report.today()
 ```
 
 ---
 
-### Input A — Slash Command (StaffChatBox và các role nhân viên)
+### Input A — Slash Command (SlashChatBox)
 
-`StaffChatBox`, `WarehouseChatBox`, `SupervisorChatBox`, `AccountantChatBox`, `ManagerChatBox` đều dùng **slash command compiler** — pure algorithm, không cần AI:
+Dùng cho mọi role nhân viên. Compiler phân tích cú pháp tĩnh — pure algorithm, không cần AI:
 
 ```
 /order status 10234
@@ -177,13 +182,13 @@ var cmd = box.Parse("/report today", "test-user-01");
 4. `--key=value` hoặc `--key "value"` → named params
 5. `--flag` không có giá trị → boolean flag = `true`
 
-**Output:** `context('<role-của-class>', userId).order.status(10234)`
+**Output:** `context(role, userId).order.status(10234)` — role lấy từ session, không từ input
 
 ---
 
-### Input B — Natural Language (CustomerChatBox)
+### Input B — Natural Language (NLUChatBox)
 
-`CustomerChatBox` dùng NLU compiler. Có **hai chế độ** — cấu hình tại deploy time:
+Dùng cho khách hàng. Có **hai chế độ** — cấu hình tại deploy time:
 
 #### Chế độ 1: Pure Algorithm (Rule-based NLU)
 
@@ -193,7 +198,7 @@ Pattern matching theo danh sách intent định nghĩa trong spec này:
 3. Extract entity bằng regex và vị trí trong câu
 4. Slot filling nếu thiếu entity bắt buộc
 
-**Output:** `context('customer', userId).domain.action(...)`
+**Output:** `context(role, userId).domain.action(...)` — role lấy từ session
 
 #### Chế độ 2: AI Agent API
 
@@ -223,7 +228,7 @@ Gửi input lên AI Agent, nhận về compact string — AI Agent KHÔNG quyế
 }
 ```
 
-**CustomerChatBox wrap thành compact string:**
+**NLUChatBox wrap thành compact string (role từ session):**
 ```
 context('customer', 'cus5501').order.status(10234)
 ```
