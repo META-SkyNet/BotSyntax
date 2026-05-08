@@ -100,27 +100,27 @@ Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Tầng sâu hơn l
 ┌─────────────────────────────────────────────────────────────────┐
 │  TẦNG 3 — JSON Object (transport & storage)                     │
 │                                                                  │
-│  { "domain": "order", "action": "status",                       │
-│    "params": { "order_id": "10234" }, "context": {...} }        │
+│  { "root": "context('staff','emp001').order.status(10234)",     │
+│    "domain": "order", "action": "status", ... }                 │
 └─────────────────────────┬───────────────────────────────────────┘
                           │  serialize / deserialize (lossless)
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  TẦNG 2 — Compact String (tương đương function call C#)         │
+│  TẦNG 2 — Compact String (C# interpreted expression)            │
 │                                                                  │
-│  order.status(order_id="10234") @STAFF #web                     │
+│  context('staff', 'emp001').order.status(10234)                 │
+│  context('customer', guest).order.status(10234)                 │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │  Compact Compiler (pure algorithm)
+                          │  Roslyn / C# interpreter
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  TẦNG 1 — Root Command (tầng sâu nhất — canonical form)         │
+│  TẦNG 1 — Thực thi (tầng sâu nhất)                             │
 │                                                                  │
-│  Compact string đã được validate, normalize, và resolve          │
-│  Đây là lệnh thực thi — bot engine chỉ tiêu thụ tầng này        │
+│  Bot engine dispatch handler theo domain + action + params      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **Nguyên tắc:** Compact string ở tầng 1 là **function signature** — như method call trong C#. JSON (tầng 3) là serialization của nó để transport qua API/log/queue. Human input (tầng 4) là sugar syntax được compile xuống.
+> **Nguyên tắc:** Compact string (tầng 2) là **C# expression chạy được** — `context()` khởi tạo execution context, chain `.domain.action()` là method call thực sự. JSON (tầng 3) là serialization để transport/log. Human input (tầng 4) là sugar syntax được compile xuống compact string.
 
 ---
 
@@ -141,7 +141,7 @@ Nhân viên gõ lệnh cấu trúc. Compiler phân tích cú pháp tĩnh (pure a
 4. `--key=value` hoặc `--key "value"` → named params
 5. `--flag` không có giá trị → boolean flag = `true`
 
-**Output:** Compact string → tầng 1
+**Output:** Compact string (tầng 2)
 
 ---
 
@@ -157,7 +157,7 @@ Pattern matching theo danh sách intent định nghĩa trong spec này:
 3. Extract entity bằng regex và vị trí trong câu
 4. Slot filling nếu thiếu entity bắt buộc
 
-**Output:** Compact string → tầng 1
+**Output:** Compact string (tầng 2)
 
 #### Chế độ 2: AI Agent API
 
@@ -180,77 +180,80 @@ Gửi input và context lên AI Agent, nhận về compact string:
 **Response từ AI Agent:**
 ```json
 {
-  "compact": "order.status(order_id=\"10234\")",
+  "compact": "context('customer', 'cus5501').order.status(10234)",
   "confidence": 0.97,
   "slot_filled": true
 }
 ```
 
-Compiler nhận compact string từ AI Agent → validate → tầng 1.
+Compiler nhận compact string từ AI Agent → validate schema → tầng 2.
 
 ---
 
 ### Tầng 2 — Compact String (C# Interpreted Expression)
 
-Compact string **là một lệnh C# được thông dịch** — không chỉ lấy cảm hứng từ C# mà là cú pháp C# hợp lệ, có thể chạy trực tiếp qua **Roslyn Scripting API** hoặc một C# interpreter tùy chỉnh.
+Compact string **là một lệnh C# được thông dịch** — cú pháp C# hợp lệ, chạy trực tiếp qua **Roslyn Scripting API** hoặc C# interpreter tùy chỉnh.
 
-`actor()` là method được định nghĩa sẵn trong script context, trả về một fluent builder object. Chain `.order.status(1234)` là C# method chain thực sự.
+`context(role, user)` là method định nghĩa sẵn trong script context, trả về fluent builder object. Chain `.order.status(1234)` là C# method chain thực sự.
+
+> **Lưu ý quote:** Interpreter hỗ trợ cả single quote `'` lẫn double quote `"` cho string literal — đây là custom extension so với C# chuẩn (vốn chỉ dùng `"`). `guest` không có quote là C# constant/static property đã định nghĩa sẵn.
 
 > **Chạy trực tiếp bằng Roslyn:**
 > ```csharp
-> // Script context đã định nghĩa sẵn: actor(), domain objects, actions
-> actor("staff", "emp001").order.status(1234)
-> actor("customer", guest).order.status(1234)
-> actor("staff", "emp001").ship.assign(10234, "GHN")
+> // Script context đã định nghĩa sẵn: context(), Guest, domain objects
+> context('staff', 'emp001').order.status(1234)
+> context('customer', 'cus5501').order.status(1234)
+> context('customer', guest).order.status(1234)
+> context('staff', 'emp001').ship.assign(order_id: 10234, carrier: 'GHN')
 > ```
-
-Đây là lý do compact string là **tầng sâu nhất (tầng 1)** — nó vừa là đặc tả, vừa là executable code.
 
 #### Compact String Format
 
 ```
-actor(<role>, <identity>).<domain>.<action>(<params>)
+context(<role>, <identity>).<domain>.<action>(<params>)
 ```
 
 | Phần | Bắt buộc | Mô tả |
 |------|----------|-------|
-| `actor(role, identity)` | Có | Khởi tạo ngữ cảnh người dùng |
-| `role` | Có | `'staff'`, `'customer'`, `'warehouse'`, `'supervisor'`, `'accountant'`, `'manager'` — luôn trong `''` |
-| `identity` | Có | `'username'` (đã đăng nhập, trong `''`) hoặc `guest` (ẩn danh, không có `''`) |
-| `domain` | Có | Tên domain thường: `order`, `ship`, `warranty`... |
-| `action` | Có | Tên action thường: `status`, `list`, `create`... |
-| `(params)` | Không | `key=value` phân cách bằng `, ` — số không cần `''`, string cần `''` |
+| `context(role, user)` | Có | Khởi tạo execution context với role và identity |
+| `role` | Có | `'staff'`, `'customer'`, `'warehouse'`, `'supervisor'`, `'accountant'`, `'manager'` |
+| `user` | Có | `'username'` (đã đăng nhập) hoặc `guest` (ẩn danh — C# constant, không có quote) |
+| `domain` | Có | `order`, `ship`, `returns`, `product`, `stock`, `warranty`, `debt`, `customer`, `report`, `cart` |
+| `action` | Có | `status`, `list`, `create`, `update`, `cancel`, `confirm`, `search`, `note`, `today`... |
+| `(params)` | Không | `key=value` hoặc `key: value` — số không cần quote, string cần `'` hoặc `"` |
 
-#### Phân biệt identity
+#### Phân biệt user identity
 
 | Dạng | Ý nghĩa | Ví dụ |
 |------|---------|-------|
-| `'username'` | Người dùng đã đăng nhập, có định danh | `actor('customer', 'cus5501')` |
-| `guest` | Người dùng ẩn danh, chưa đăng nhập | `actor('customer', guest)` |
+| `'username'` | Người dùng đã đăng nhập, có định danh | `context('customer', 'cus5501')` |
+| `guest` | Người dùng ẩn danh, chưa đăng nhập | `context('customer', guest)` |
 
 #### Ví dụ
 
-```
-actor('staff', 'emp001').order.status(1234)
-actor('customer', 'cus5501').order.status(1234)
-actor('customer', guest).order.status(1234)
+```csharp
+context('staff', 'emp001').order.status(1234)
+context('customer', 'cus5501').order.status(1234)
+context('customer', guest).order.status(1234)
 
-actor('staff', 'emp001').order.list(status='PENDING', date='01/05/2026~08/05/2026')
-actor('staff', 'emp001').ship.assign(order_id=10234, carrier='GHN')
-actor('supervisor', 'sup01').order.cancel(order_id=10234, reason='khách yêu cầu')
-actor('accountant', 'acc01').debt.confirm(debt_id='CN001', amount=5000000)
-actor('customer', 'cus5501').return.create(order_id=10234, type='exchange')
-actor('manager', 'mgr01').report.today()
-actor('customer', guest).product.search(keyword='hoodie', price_max=500000)
+context('staff', 'emp001').order.list(status: 'PENDING', date: '01/05/2026~08/05/2026')
+context('staff', 'emp001').ship.assign(order_id: 10234, carrier: 'GHN')
+context('supervisor', 'sup01').order.cancel(order_id: 10234, reason: 'khách yêu cầu')
+context('accountant', 'acc01').debt.confirm(debt_id: 'CN001', amount: 5000000)
+context('customer', 'cus5501').returns.create(order_id: 10234, type: 'exchange')
+context('manager', 'mgr01').report.today()
+context('customer', guest).product.search(keyword: 'hoodie', price_max: 500000)
 ```
+
+> **Lưu ý domain `returns`:** Đặt tên `returns` (không phải `return`) vì `return` là reserved keyword trong C# — sẽ gây compile error nếu dùng làm property name.
 
 #### Quy tắc parse Compact String
 
-1. Match `actor(` → parse `role` (string) và `identity` (string hoặc keyword `guest`)
+1. Match `context(` → parse `role` (string) và `user` (string hoặc constant `guest`)
 2. Sau `)` gặp `.` → parse `domain`
 3. Sau `.domain` gặp `.` → parse `action` và `(params)`
-4. Parse params: `key=value` — số là số nguyên/float, `'string'` là chuỗi
-5. Bot engine tự cast value sang kiểu đúng theo entity schema
+4. Parse params: `key=value` hoặc `key: value` — số là int/float, string trong `'` hoặc `"`
+5. Bot engine cast value sang kiểu đúng theo entity schema
 
 ---
 
@@ -285,7 +288,7 @@ JSON là **serialization lossless** của compact string — dùng để transpo
 ```json
 // Input A: /order status 10234  (nhân viên)
 {
-  "root": "actor('staff', 'emp001').order.status(10234)",
+  "root": "context('staff', 'emp001').order.status(10234)",
   "domain": "order", "action": "status",
   "params": { "order_id": 10234 },
   "context": { "role": "staff", "identity": "emp001", "channel": "web", "timestamp": "2026-05-08T10:30:00+07:00" },
@@ -294,7 +297,7 @@ JSON là **serialization lossless** của compact string — dùng để transpo
 
 // Input B: "đơn 10234 đang ở đâu"  (khách hàng, AI Agent)
 {
-  "root": "actor('customer', 'cus5501').order.status(10234)",
+  "root": "context('customer', 'cus5501').order.status(10234)",
   "domain": "order", "action": "status",
   "params": { "order_id": 10234 },
   "context": { "role": "customer", "identity": "cus5501", "channel": "zalo", "timestamp": "2026-05-08T10:31:00+07:00" },
@@ -303,11 +306,11 @@ JSON là **serialization lossless** của compact string — dùng để transpo
 
 // Input C: compact string trực tiếp (khách ẩn danh)
 {
-  "root": "actor('customer', guest).order.status(10234)",
+  "root": "context('customer', guest).order.status(10234)",
   "domain": "order", "action": "status",
   "params": { "order_id": 10234 },
   "context": { "role": "customer", "identity": null, "channel": "web", "timestamp": "2026-05-08T10:31:00+07:00" },
-  "meta": { "input_type": "compact", "compiler": "algorithm", "confidence": null, "raw_input": "actor('customer', guest).order.status(10234)" }
+  "meta": { "input_type": "compact", "compiler": "algorithm", "confidence": null, "raw_input": "context('customer', guest).order.status(10234)" }
 }
 ```
 
@@ -674,10 +677,10 @@ Trả về: mã đơn, trạng thái, ngày đặt, danh sách sản phẩm, đ�
 #### Lệnh nhân viên
 
 ```
-/return create <ORDER_ID> --type=exchange [--sku=<SKU>] [--reason="<lý do>"]
+/returns create <ORDER_ID> --type=exchange [--sku=<SKU>] [--reason="<lý do>"]
 ```
 
-> Ví dụ: `/return create 10234 --type=exchange --sku=AO-HOODIE-L-DEN --reason="sai size"`
+> Ví dụ: `/returns create 10234 --type=exchange --sku=AO-HOODIE-L-DEN --reason="sai size"`
 
 #### Tham số
 
@@ -711,10 +714,10 @@ Trả về: mã đơn, trạng thái, ngày đặt, danh sách sản phẩm, đ�
 #### Lệnh nhân viên
 
 ```
-/return create <ORDER_ID> --type=return [--reason="<lý do>"] [--refund=<PRICE>]
+/returns create <ORDER_ID> --type=return [--reason="<lý do>"] [--refund=<PRICE>]
 ```
 
-> Ví dụ: `/return create 10234 --type=return --reason="hàng bị lỗi" --refund=250000`
+> Ví dụ: `/returns create 10234 --type=return --reason="hàng bị lỗi" --refund=250000`
 
 #### Quyền tối thiểu: `SUPERVISOR`
 
@@ -738,7 +741,7 @@ Trả về: mã đơn, trạng thái, ngày đặt, danh sách sản phẩm, đ�
 #### Lệnh nhân viên
 
 ```
-/return status <RETURN_ID>
+/returns status <RETURN_ID>
 ```
 
 #### Quyền tối thiểu: `STAFF`
@@ -764,11 +767,11 @@ Trả về: mã đơn, trạng thái, ngày đặt, danh sách sản phẩm, đ�
 #### Lệnh nhân viên
 
 ```
-/return approve <RETURN_ID> [--note="<ghi chú>"]
-/return reject <RETURN_ID> --reason="<lý do từ chối>"
+/returns approve <RETURN_ID> [--note="<ghi chú>"]
+/returns reject <RETURN_ID> --reason="<lý do từ chối>"
 ```
 
-> Ví dụ: `/return approve TRA001`, `/return reject TRA001 --reason="quá thời hạn đổi trả"`
+> Ví dụ: `/returns approve TRA001`, `/returns reject TRA001 --reason="quá thời hạn đổi trả"`
 
 #### Quyền tối thiểu: `SUPERVISOR`
 
@@ -1511,10 +1514,10 @@ Bảng tổng hợp nhanh — dùng để tra cứu mà không cần đọc toà
 
 | Lệnh | Mô tả | Quyền |
 |------|-------|-------|
-| `/return create <ORDER_ID> --type=exchange\|return [--sku] [--reason]` | Tạo yêu cầu đổi/trả | SUPERVISOR |
-| `/return status <RETURN_ID>` | Xem trạng thái yêu cầu | STAFF |
-| `/return approve <RETURN_ID> [--note]` | Duyệt yêu cầu | SUPERVISOR |
-| `/return reject <RETURN_ID> --reason` | Từ chối yêu cầu | SUPERVISOR |
+| `/returns create <ORDER_ID> --type=exchange\|return [--sku] [--reason]` | Tạo yêu cầu đổi/trả | SUPERVISOR |
+| `/returns status <RETURN_ID>` | Xem trạng thái yêu cầu | STAFF |
+| `/returns approve <RETURN_ID> [--note]` | Duyệt yêu cầu | SUPERVISOR |
+| `/returns reject <RETURN_ID> --reason` | Từ chối yêu cầu | SUPERVISOR |
 
 ### Sản phẩm
 
