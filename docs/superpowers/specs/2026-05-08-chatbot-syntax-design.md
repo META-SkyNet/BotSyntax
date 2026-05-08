@@ -91,11 +91,11 @@ Hệ thống có 4 tầng từ sâu nhất đến bề mặt. Bảo mật đư�
 ┌─────────────────────────────────────────────────────────────────┐
 │  TẦNG 4 — IChatBox (entry point, phân theo cú pháp input)       │
 │                                                                  │
-│  NLUChatBox                    SlashChatBox                      │
-│  "đơn 10234 ở đâu"             /order status 10234              │
-│  (natural language)            (slash command)                   │
+│  NLUChatBox        SlashChatBox         SystemChatBox            │
+│  "đơn 10234 ở đâu" /order status 10234  compact string          │
+│  (natural language) (slash command)    (programmatic/webhook)    │
 │                                                                  │
-│  Cả hai nhận (input, role, userId) từ authenticated session      │
+│  Cả ba nhận (input, role, userId) từ authenticated session       │
 └──────┬──────────────────────────────────┬────────────────────────┘
        │ NLU compiler                     │ Slash compiler
        │ (algorithm | AI Agent)           │ (pure algorithm)
@@ -140,14 +140,15 @@ interface IChatBox {
 }
 ```
 
-Chỉ có **2 implementation** — tách theo cú pháp input, không theo role:
+Có **3 implementation** — tách theo cú pháp input, không theo role:
 
 | Class | Input nhận | Dùng cho | Compiler |
 |-------|------------|----------|----------|
 | `NLUChatBox` | Natural language | Khách hàng | Algorithm hoặc AI Agent |
 | `SlashChatBox` | Slash commands `/` | Nhân viên (mọi role) | Pure algorithm |
+| `SystemChatBox` | Compact string sẵn có | Hệ thống nội bộ, webhook, scheduled task | Validate + passthrough |
 
-Cả hai đều nhận `role` và `userId` từ **authenticated session** — không từ input của người dùng — rồi wrap vào `context(role, userId)`:
+Cả ba đều nhận `role` và `userId` từ **authenticated session** — không từ input của người dùng:
 
 ```csharp
 // Khách hàng gõ natural language:
@@ -161,6 +162,10 @@ var cmd = new SlashChatBox().Parse("/order status 10234", "staff", "emp001");
 // Test as manager — role lấy từ session test:
 var cmd = new SlashChatBox().Parse("/report today", "manager", "test-user-01");
 // → context('manager', 'test-user-01').report.today()
+
+// Hệ thống gửi compact string trực tiếp (webhook, scheduled task, service-to-service):
+var cmd = new SystemChatBox().Parse("context('system', 'scheduler').report.daily()", "system", "scheduler");
+// → context('system', 'scheduler').report.daily()
 ```
 
 ---
@@ -217,7 +222,7 @@ Gửi input lên AI Agent, nhận về compact string — AI Agent KHÔNG quyế
 }
 ```
 
-> **Lưu ý:** `role` không gửi lên AI Agent — AI chỉ trả về `domain.action(params)`, `CustomerChatBox` tự wrap vào `context('customer', userId)`.
+> **Lưu ý:** `role` không gửi lên AI Agent — AI chỉ trả về `domain.action(params)`, `NLUChatBox` tự wrap vào `context('customer', userId)`.
 
 **Response từ AI Agent:**
 ```json
@@ -232,6 +237,43 @@ Gửi input lên AI Agent, nhận về compact string — AI Agent KHÔNG quyế
 ```
 context('customer', 'cus5501').order.status(10234)
 ```
+
+---
+
+### Input C — System (SystemChatBox)
+
+Dùng cho các caller nội bộ — không phải người dùng cuối. Input **đã là compact string** hoàn chỉnh; `SystemChatBox` chỉ validate format và parse, không cần NLU hay slash parsing.
+
+**Use cases:**
+- **Scheduled task:** job chạy đêm gửi lệnh tạo báo cáo
+- **Webhook:** shipping provider callback cập nhật trạng thái giao hàng
+- **Service-to-service:** inventory service điều chỉnh tồn kho sau khi order hoàn tất
+
+**Quy tắc parse:**
+1. Input phải là compact string hợp lệ với `context(role, userId)` đầy đủ
+2. `role` và `userId` trong compact string phải khớp với `role`/`userId` được truyền từ session — nếu không khớp → `CompilerResult.Fail(CONTEXT_MISMATCH, ...)`
+3. Role `system` có permission riêng trong PermissionTable
+
+```csharp
+// Scheduled task tạo báo cáo hàng ngày:
+var cmd = new SystemChatBox().Parse(
+    "context('system', 'scheduler').report.daily()",
+    "system", "scheduler");
+// → context('system', 'scheduler').report.daily()
+
+// Webhook GHN cập nhật trạng thái giao hàng:
+var cmd = new SystemChatBox().Parse(
+    "context('system', 'webhook-ghn').ship.update(order_id: 10234, status: 'delivered')",
+    "system", "webhook-ghn");
+
+// Role trong compact string không khớp session → fail:
+var cmd = new SystemChatBox().Parse(
+    "context('manager', 'emp001').report.daily()",
+    "system", "scheduler");
+// → CompilerResult.Fail(CONTEXT_MISMATCH, "Role in compact string does not match session")
+```
+
+**Output:** `CompilerResult.Ok(CompactString)` — từ đây luồng giống hệt `SlashChatBox` và `NLUChatBox`.
 
 ---
 

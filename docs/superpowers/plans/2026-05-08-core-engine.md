@@ -4,7 +4,7 @@
 
 **Goal:** Build the core pipeline — IChatBox → Compiler → CompactString → RootCommand JSON → Executor with role-based permission check.
 
-**Architecture:** Two IChatBox implementations (NLUChatBox for natural language, SlashChatBox for slash commands) compile user input into `context(role, userId).domain.action(params)` compact strings. A custom parser converts compact strings to RootCommand records. BotExecutor checks permissions via PermissionTable before dispatching to domain handlers.
+**Architecture:** Three IChatBox implementations — NLUChatBox (natural language), SlashChatBox (slash commands), SystemChatBox (compact string passthrough for webhooks/scheduled tasks) — compile input into `context(role, userId).domain.action(params)` compact strings. A custom parser converts compact strings to RootCommand records. BotExecutor checks permissions via PermissionTable before dispatching to domain handlers.
 
 **Tech Stack:** .NET 8, C# 12, xUnit 2.x, System.Text.Json, FluentAssertions
 
@@ -39,6 +39,7 @@ src/
     ChatBox/
       SlashChatBox.cs      ← IChatBox for slash commands
       NLUChatBox.cs        ← IChatBox for natural language (algorithm mode)
+      SystemChatBox.cs     ← IChatBox for compact string passthrough (system/webhook/scheduler)
     Compiler/
       SlashCommandCompiler.cs   ← /domain action param --key=val
       AlgorithmNLUCompiler.cs   ← pattern matching → CompactString
@@ -64,6 +65,7 @@ tests/
     ChatBox/
       SlashChatBoxTests.cs
       NLUChatBoxTests.cs
+      SystemChatBoxTests.cs
     Executor/
       BotExecutorTests.cs
     Helpers/
@@ -1292,7 +1294,164 @@ git commit -m "feat: add NLUChatBox with AlgorithmNLUCompiler and default intent
 
 ---
 
-## Task 8: BotExecutor
+## Task 8: SystemChatBox
+
+**Files:**
+- Create: `src/BotSyntax.Core/ChatBox/SystemChatBox.cs`
+- Test: `tests/BotSyntax.Core.Tests/ChatBox/SystemChatBoxTests.cs`
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/BotSyntax.Core.Tests/ChatBox/SystemChatBoxTests.cs`:
+
+```csharp
+using BotSyntax.Core.ChatBox;
+using BotSyntax.Core.Models;
+using FluentAssertions;
+
+namespace BotSyntax.Core.Tests.ChatBox;
+
+public class SystemChatBoxTests
+{
+    private readonly SystemChatBox _box = new();
+
+    [Fact]
+    public void Parse_ValidCompactString_ReturnsOk()
+    {
+        var result = _box.Parse(
+            "context('system', 'scheduler').report.daily()",
+            "system", "scheduler");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Role.Should().Be("system");
+        result.Value.UserId.Should().Be("scheduler");
+        result.Value.Domain.Should().Be("report");
+        result.Value.Action.Should().Be("daily");
+    }
+
+    [Fact]
+    public void Parse_RoleMismatch_ReturnsContextMismatchError()
+    {
+        var result = _box.Parse(
+            "context('manager', 'emp001').report.daily()",
+            "system", "scheduler");
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be(CompilerErrorCode.ContextMismatch);
+    }
+
+    [Fact]
+    public void Parse_UserIdMismatch_ReturnsContextMismatchError()
+    {
+        var result = _box.Parse(
+            "context('system', 'webhook-ghn').ship.update(order_id: 10234, status: 'delivered')",
+            "system", "scheduler");
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be(CompilerErrorCode.ContextMismatch);
+    }
+
+    [Fact]
+    public void Parse_MalformedCompactString_ReturnsParseError()
+    {
+        var result = _box.Parse("not a compact string", "system", "scheduler");
+
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Code.Should().Be(CompilerErrorCode.ParseError);
+    }
+
+    [Fact]
+    public void Parse_WebhookCompactString_ParsesParams()
+    {
+        var result = _box.Parse(
+            "context('system', 'webhook-ghn').ship.update(order_id: 10234, status: 'delivered')",
+            "system", "webhook-ghn");
+
+        result.IsSuccess.Should().BeTrue();
+        result.Value!.Domain.Should().Be("ship");
+        result.Value.Action.Should().Be("update");
+        result.Value.Params["order_id"].Should().Be(10234);
+        result.Value.Params["status"].Should().Be("delivered");
+    }
+}
+```
+
+- [ ] **Step 2: Add `ContextMismatch` to CompilerErrorCode**
+
+Open `src/BotSyntax.Core/Models/CompilerError.cs` and add the new code:
+
+```csharp
+public enum CompilerErrorCode
+{
+    ParseError,
+    UnknownDomain,
+    UnknownAction,
+    MissingRequiredParam,
+    ContextMismatch,      // ← add this
+}
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+```
+dotnet test tests/BotSyntax.Core.Tests --filter "SystemChatBoxTests"
+```
+
+Expected: FAIL — `SystemChatBox` does not exist yet.
+
+- [ ] **Step 4: Implement SystemChatBox**
+
+Create `src/BotSyntax.Core/ChatBox/SystemChatBox.cs`:
+
+```csharp
+using BotSyntax.Core.Interfaces;
+using BotSyntax.Core.Models;
+using BotSyntax.Core.Parser;
+
+namespace BotSyntax.Core.ChatBox;
+
+public sealed class SystemChatBox : IChatBox
+{
+    private readonly CompactStringParser _parser = new();
+
+    public CompilerResult Parse(string input, string role, string? userId)
+    {
+        var parsed = _parser.TryParse(input);
+        if (parsed is null)
+            return CompilerResult.Fail(CompilerErrorCode.ParseError,
+                $"Input is not a valid compact string: {input}");
+
+        if (!string.Equals(parsed.Role, role, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(parsed.UserId, userId, StringComparison.OrdinalIgnoreCase))
+            return CompilerResult.Fail(CompilerErrorCode.ContextMismatch,
+                $"Role/userId in compact string ('{parsed.Role}', '{parsed.UserId}') " +
+                $"does not match session ('{role}', '{userId}')");
+
+        return CompilerResult.Ok(parsed);
+    }
+}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+```
+dotnet test tests/BotSyntax.Core.Tests --filter "SystemChatBoxTests"
+```
+
+Expected: PASS — 5 tests green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/BotSyntax.Core/ChatBox/SystemChatBox.cs \
+        src/BotSyntax.Core/Models/CompilerError.cs \
+        tests/BotSyntax.Core.Tests/ChatBox/SystemChatBoxTests.cs
+git commit -m "feat: add SystemChatBox for compact string passthrough with context validation"
+```
+
+---
+
+## Task 9: BotExecutor
 
 **Files:**
 - Create: `src/BotSyntax.Core/Executor/BotExecutor.cs`
@@ -1465,18 +1624,20 @@ git commit -m "feat: add BotExecutor with permission check and domain handler di
 - ✅ IChatBox interface — Task 3
 - ✅ NLUChatBox (algorithm mode) — Task 7
 - ✅ SlashChatBox — Task 6
+- ✅ SystemChatBox (compact string passthrough) — Task 8
 - ✅ CompactString parser — Task 4
 - ✅ context(role, userId) format — Task 2, 4
 - ✅ guest keyword — Task 2, 4
 - ✅ JSON RootCommand — Task 2
 - ✅ Permission system (5 roles + inheritance) — Task 5
-- ✅ BotExecutor dispatch — Task 8
+- ✅ BotExecutor dispatch — Task 9
 - ⏭ AI Agent NLU mode — Plan 3
 - ⏭ 11 domain handlers — Plan 2
 
 **Placeholder scan:** No TBD, TODO, or incomplete steps found.
 
 **Type consistency:**
-- `CompilerResult.Ok(CompactString)` / `CompilerResult.Fail(code, message)` — consistent Tasks 2→4→6→7→8
-- `IDomainHandler.Domain` + `IDomainHandler.HandleAsync(RootCommand)` — consistent Tasks 3→8
-- `PermissionTable.IsAllowed(role, domain, action)` — consistent Tasks 5→8
+- `CompilerResult.Ok(CompactString)` / `CompilerResult.Fail(code, message)` — consistent Tasks 2→4→6→7→8→9
+- `IDomainHandler.Domain` + `IDomainHandler.HandleAsync(RootCommand)` — consistent Tasks 3→9
+- `PermissionTable.IsAllowed(role, domain, action)` — consistent Tasks 5→9
+- `CompilerErrorCode.ContextMismatch` added in Task 8, used by SystemChatBox
