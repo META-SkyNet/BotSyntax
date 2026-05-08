@@ -190,45 +190,67 @@ Compiler nhận compact string từ AI Agent → validate → tầng 1.
 
 ---
 
-### Tầng 2 — Compact String (Function Call Notation)
+### Tầng 2 — Compact String (C# Interpreted Expression)
 
-Compact string là biểu diễn **gần nhất với tầng 1** — equivalent với method call trong C#. Đây vừa là output của compiler (từ human input), vừa là input trực tiếp (từ developer/hệ thống).
+Compact string **là một lệnh C# được thông dịch** — không chỉ lấy cảm hứng từ C# mà là cú pháp C# hợp lệ, có thể chạy trực tiếp qua **Roslyn Scripting API** hoặc một C# interpreter tùy chỉnh.
 
-> C# analogy:  
-> `Orders.Status(orderId: "10234")` ≡ `order.status(order_id="10234")`
+`actor()` là method được định nghĩa sẵn trong script context, trả về một fluent builder object. Chain `.order.status(1234)` là C# method chain thực sự.
+
+> **Chạy trực tiếp bằng Roslyn:**
+> ```csharp
+> // Script context đã định nghĩa sẵn: actor(), domain objects, actions
+> actor("staff", "emp001").order.status(1234)
+> actor("customer", guest).order.status(1234)
+> actor("staff", "emp001").ship.assign(10234, "GHN")
+> ```
+
+Đây là lý do compact string là **tầng sâu nhất (tầng 1)** — nó vừa là đặc tả, vừa là executable code.
 
 #### Compact String Format
 
 ```
-<domain>.<action>(<key>="<value>", ...) @<ROLE> #<channel>
+actor(<role>, <identity>).<domain>.<action>(<params>)
 ```
 
 | Phần | Bắt buộc | Mô tả |
 |------|----------|-------|
-| `domain` | Có | Tên domain thường (xem bảng prefix) |
-| `action` | Có | Tên action thường |
-| `(params)` | Không | `key="value"` phân cách bằng `, ` — string luôn trong `""` |
-| `@ROLE` | Không | Override role: `@CUSTOMER`, `@STAFF`, `@MANAGER`... |
-| `#channel` | Không | Override channel: `#web`, `#zalo`, `#messenger` |
+| `actor(role, identity)` | Có | Khởi tạo ngữ cảnh người dùng |
+| `role` | Có | `'staff'`, `'customer'`, `'warehouse'`, `'supervisor'`, `'accountant'`, `'manager'` — luôn trong `''` |
+| `identity` | Có | `'username'` (đã đăng nhập, trong `''`) hoặc `guest` (ẩn danh, không có `''`) |
+| `domain` | Có | Tên domain thường: `order`, `ship`, `warranty`... |
+| `action` | Có | Tên action thường: `status`, `list`, `create`... |
+| `(params)` | Không | `key=value` phân cách bằng `, ` — số không cần `''`, string cần `''` |
 
-**Ví dụ:**
+#### Phân biệt identity
+
+| Dạng | Ý nghĩa | Ví dụ |
+|------|---------|-------|
+| `'username'` | Người dùng đã đăng nhập, có định danh | `actor('customer', 'cus5501')` |
+| `guest` | Người dùng ẩn danh, chưa đăng nhập | `actor('customer', guest)` |
+
+#### Ví dụ
 
 ```
-order.status(order_id="10234")
-order.list(status="PENDING", date="01/05/2026~08/05/2026") @STAFF
-ship.assign(order_id="10234", carrier="GHN") @STAFF #web
-warranty.status(warranty_code="BH00456")
-debt.confirm(debt_id="CN001", amount="5000000") @ACCOUNTANT
-customer.note(customer_id="KH001", content="khách VIP, ưu tiên") @STAFF
-report.today() @MANAGER
+actor('staff', 'emp001').order.status(1234)
+actor('customer', 'cus5501').order.status(1234)
+actor('customer', guest).order.status(1234)
+
+actor('staff', 'emp001').order.list(status='PENDING', date='01/05/2026~08/05/2026')
+actor('staff', 'emp001').ship.assign(order_id=10234, carrier='GHN')
+actor('supervisor', 'sup01').order.cancel(order_id=10234, reason='khách yêu cầu')
+actor('accountant', 'acc01').debt.confirm(debt_id='CN001', amount=5000000)
+actor('customer', 'cus5501').return.create(order_id=10234, type='exchange')
+actor('manager', 'mgr01').report.today()
+actor('customer', guest).product.search(keyword='hoodie', price_max=500000)
 ```
 
-**Quy tắc parse Compact String:**
-1. Split tại `.` đầu tiên → `domain` và phần còn lại
-2. Split phần còn lại tại `(` → `action` và param block
-3. Parse param block: `key="value"` phân cách `, `
-4. Scan suffix `@ROLE` và `#channel` (sau dấu `)`)
-5. Mọi giá trị đều là string — bot engine tự cast sang kiểu đúng
+#### Quy tắc parse Compact String
+
+1. Match `actor(` → parse `role` (string) và `identity` (string hoặc keyword `guest`)
+2. Sau `)` gặp `.` → parse `domain`
+3. Sau `.domain` gặp `.` → parse `action` và `(params)`
+4. Parse params: `key=value` — số là số nguyên/float, `'string'` là chuỗi
+5. Bot engine tự cast value sang kiểu đúng theo entity schema
 
 ---
 
@@ -263,33 +285,33 @@ JSON là **serialization lossless** của compact string — dùng để transpo
 ```json
 // Input A: /order status 10234  (nhân viên)
 {
-  "root": "order.status(order_id=\"10234\")",
+  "root": "actor('staff', 'emp001').order.status(10234)",
   "domain": "order", "action": "status",
-  "params": { "order_id": "10234" },
-  "context": { "role": "STAFF", "channel": "web", "user_id": "EMP001", "timestamp": "2026-05-08T10:30:00+07:00" },
+  "params": { "order_id": 10234 },
+  "context": { "role": "staff", "identity": "emp001", "channel": "web", "timestamp": "2026-05-08T10:30:00+07:00" },
   "meta": { "input_type": "slash", "compiler": "algorithm", "confidence": null, "raw_input": "/order status 10234" }
 }
 
 // Input B: "đơn 10234 đang ở đâu"  (khách hàng, AI Agent)
 {
-  "root": "order.status(order_id=\"10234\")",
+  "root": "actor('customer', 'cus5501').order.status(10234)",
   "domain": "order", "action": "status",
-  "params": { "order_id": "10234" },
-  "context": { "role": "CUSTOMER", "channel": "zalo", "user_id": "CUS5501", "timestamp": "2026-05-08T10:31:00+07:00" },
+  "params": { "order_id": 10234 },
+  "context": { "role": "customer", "identity": "cus5501", "channel": "zalo", "timestamp": "2026-05-08T10:31:00+07:00" },
   "meta": { "input_type": "natural", "compiler": "ai_agent", "confidence": 0.97, "raw_input": "đơn 10234 đang ở đâu" }
 }
 
-// Input C: compact string trực tiếp
+// Input C: compact string trực tiếp (khách ẩn danh)
 {
-  "root": "order.status(order_id=\"10234\")",
+  "root": "actor('customer', guest).order.status(10234)",
   "domain": "order", "action": "status",
-  "params": { "order_id": "10234" },
-  "context": { "role": "CUSTOMER", "channel": "zalo", "user_id": "CUS5501", "timestamp": "2026-05-08T10:31:00+07:00" },
-  "meta": { "input_type": "compact", "compiler": "algorithm", "confidence": null, "raw_input": "order.status(order_id=\"10234\")" }
+  "params": { "order_id": 10234 },
+  "context": { "role": "customer", "identity": null, "channel": "web", "timestamp": "2026-05-08T10:31:00+07:00" },
+  "meta": { "input_type": "compact", "compiler": "algorithm", "confidence": null, "raw_input": "actor('customer', guest).order.status(10234)" }
 }
 ```
 
-> **Nhận xét:** Trường `root` luôn giống nhau cho cùng một intent — bot engine route theo `root`, không quan tâm tầng trên.
+> **Nhận xét:** Trường `root` luôn giống nhau cho cùng intent — bot engine route theo `root`, không quan tâm input đến từ đâu.
 
 ---
 
