@@ -1,0 +1,12 @@
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\bin\Debug\net8.0\BotSyntax.Core.deps.json
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\bin\Debug\net8.0\BotSyntax.Core.dll
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\bin\Debug\net8.0\BotSyntax.Core.pdb
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.GeneratedMSBuildEditorConfig.editorconfig
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.AssemblyInfoInputs.cache
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.AssemblyInfo.cs
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.csproj.CoreCompileInputs.cache
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.sourcelink.json
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.dll
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\refint\BotSyntax.Core.dll
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\BotSyntax.Core.pdb
+D:\META\Projects\BotSyntax\src\BotSyntax.Core\obj\Debug\net8.0\ref\BotSyntax.Core.dll

@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BotSyntax.Core/BotSyntax.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BotSyntax.Core.Tests/BotSyntax.Core.Tests.csproj" />
+  </Folder>
+</Solution>
