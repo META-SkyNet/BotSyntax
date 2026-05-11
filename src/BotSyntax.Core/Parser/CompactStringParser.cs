@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 using BotSyntax.Core.Models;
 
@@ -59,7 +60,7 @@ public sealed class CompactStringParser
                 dict[key] = value[1..^1];
             else if (int.TryParse(value, out var intVal))
                 dict[key] = intVal;
-            else if (double.TryParse(value, out var dblVal))
+            else if (double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var dblVal))
                 dict[key] = dblVal;
             else
                 dict[key] = value;

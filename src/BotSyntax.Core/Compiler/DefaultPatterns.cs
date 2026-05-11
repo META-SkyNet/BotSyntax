@@ -50,7 +50,7 @@ internal static class DefaultPatterns
             @"(?:giỏ hàng|gio hang|giỏ của tôi|gio cua toi)"),
 
         // Support
-        new IntentPattern("customer", "complaint.create",
+        new IntentPattern("customer", "complain",
             @"(?:khiếu nại|khieu nai|phản ánh|phan anh|không hài lòng|khong hai long|liên hệ|lien he)"),
     };
 }

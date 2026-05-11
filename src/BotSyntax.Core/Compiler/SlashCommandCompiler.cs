@@ -1,3 +1,4 @@
+using System.Globalization;
 using BotSyntax.Core.Models;
 
 namespace BotSyntax.Core.Compiler;
@@ -63,7 +64,7 @@ public sealed class SlashCommandCompiler
     }
 
     private static object TryParse(string value) =>
-        int.TryParse(value, out var i)    ? i :
-        double.TryParse(value, out var d) ? d :
+        int.TryParse(value, out var i) ? i :
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d :
         (object)value;
 }
