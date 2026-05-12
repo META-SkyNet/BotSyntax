@@ -10,7 +10,7 @@ public sealed class CompactStringParser
     // context('role', guest).domain.action(params)
     private static readonly Regex _pattern = new(
         @"^context\(['""](?<role>[^'""]+)['""]\s*,\s*(?:guest|['""](?<userId>[^'""]*)['""])\)\." +
-        @"(?<domain>[a-z]+)\.(?<action>[a-z]+)\((?<params>[^)]*)\)$",
+        @"(?<domain>[a-z]+)\.(?<action>[a-z][a-z-]*)\((?<params>[^)]*)\)$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     public CompilerResult Parse(string input)

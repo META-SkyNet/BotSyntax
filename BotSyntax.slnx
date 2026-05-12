@@ -1,8 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/BotSyntax.Core/BotSyntax.Core.csproj" />
+    <Project Path="src/BotSyntax.Handlers/BotSyntax.Handlers.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/BotSyntax.Core.Tests/BotSyntax.Core.Tests.csproj" />
+    <Project Path="tests/BotSyntax.Handlers.Tests/BotSyntax.Handlers.Tests.csproj" />
   </Folder>
 </Solution>

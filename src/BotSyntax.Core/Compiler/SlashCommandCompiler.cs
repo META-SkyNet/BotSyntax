@@ -26,7 +26,9 @@ public sealed class SlashCommandCompiler
         ["customer.info"]    = "customer_id",
         ["customer.orders"]  = "customer_id",
         ["customer.note"]    = "customer_id",
-        ["customer.search"]  = "keyword",
+        ["customer.search"]    = "keyword",
+        ["stock.import"]       = "subaction",
+        ["customer.complaint"] = "subaction",
     };
 
     public CompilerResult Compile(string input, string role, string? userId)

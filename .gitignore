@@ -1,0 +1,23 @@
+## .NET build outputs
+bin/
+obj/
+
+## NuGet
+*.nupkg
+*.nuspec
+packages/
+.nuget/
+
+## User-specific files
+*.user
+*.suo
+*.userprefs
+.vs/
+
+## IDE
+.idea/
+*.swp
+
+## OMC / Claude state
+.claude/
+.omc/
